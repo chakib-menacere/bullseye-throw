@@ -1,7 +1,14 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
-const WIDTH = canvas.width;
-const HEIGHT = canvas.height;
+
+// Logical drawing resolution. The canvas is scaled via CSS/DPR to fit any
+// screen size, but every draw call below works in this fixed coordinate space.
+const WIDTH = 800;
+const HEIGHT = 600;
+const dpr = window.devicePixelRatio || 1;
+canvas.width = WIDTH * dpr;
+canvas.height = HEIGHT * dpr;
+ctx.scale(dpr, dpr);
 
 const HAND_X = WIDTH / 2;
 const HAND_Y = HEIGHT - 40;
@@ -9,7 +16,20 @@ const MAX_DARTS = 10;
 const THROW_DURATION = 250;
 const RESPAWN_DELAY = 1500;
 const DART_COST = 15;
-const BUY_BUTTON = { x: WIDTH / 2 - 110, y: HEIGHT / 2 - 25, w: 220, h: 60 };
+const BUY_BUTTON = { x: WIDTH / 2 - 120, y: HEIGHT / 2 - 40, w: 240, h: 80 };
+const SHOP_BUTTON = { x: WIDTH - 110, y: 44, w: 90, h: 44 };
+
+// Throwing arm animation: a windup (pull back), a release (dart leaves the
+// hand partway through the forward swing), then an easing recovery to idle.
+const ARM_ANIM_DURATION = 480;
+const RELEASE_FRACTION = 0.5;
+const ARM_KEYFRAMES = [
+  { t: 0, o: 0 },
+  { t: 0.32, o: -0.55 },
+  { t: RELEASE_FRACTION, o: -0.1 },
+  { t: 0.72, o: 0.4 },
+  { t: 1, o: 0 },
+];
 
 // Ring thresholds as a fraction of target radius, ordered inner to outer.
 const RING_SCORES = [
@@ -25,6 +45,7 @@ let score = 0;
 let money = 0;
 let dartsLeft = MAX_DARTS;
 let state = 'playing'; // 'playing' | 'shop' | 'gameover'
+let armAnim = null; // { startTime, toX, toY, released }
 let flyingDart = null;
 let popups = [];
 let targets = [];
@@ -96,6 +117,7 @@ function resetGame() {
   money = 0;
   dartsLeft = MAX_DARTS;
   state = 'playing';
+  armAnim = null;
   flyingDart = null;
   popups = [];
   spawnTargets();
@@ -109,6 +131,14 @@ function pointInRect(px, py, rect) {
   return px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
 }
 
+function toggleShop() {
+  if (state === 'shop') {
+    state = dartsLeft > 0 ? 'playing' : 'gameover';
+  } else if ((state === 'playing' || state === 'gameover') && !armAnim) {
+    state = 'shop';
+  }
+}
+
 function buyDart() {
   if (money < DART_COST) {
     addPopup(WIDTH / 2, HEIGHT / 2 - 40, 'Not enough money', '#ff5c5c');
@@ -119,15 +149,29 @@ function buyDart() {
   addPopup(WIDTH / 2, HEIGHT / 2 - 40, '+1 dart', '#7CFC00');
 }
 
-function throwDart(targetX, targetY) {
-  flyingDart = {
-    fromX: HAND_X,
-    fromY: HAND_Y,
-    toX: targetX,
-    toY: targetY,
-    startTime: performance.now(),
-  };
+function startThrow(targetX, targetY) {
+  armAnim = { startTime: performance.now(), toX: targetX, toY: targetY, released: false };
   dartsLeft--;
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function smoothstep(t) {
+  const c = Math.min(Math.max(t, 0), 1);
+  return c * c * (3 - 2 * c);
+}
+
+function armSwingOffset(progress) {
+  for (let i = 0; i < ARM_KEYFRAMES.length - 1; i++) {
+    const a = ARM_KEYFRAMES[i];
+    const b = ARM_KEYFRAMES[i + 1];
+    if (progress <= b.t) {
+      return lerp(a.o, b.o, smoothstep((progress - a.t) / (b.t - a.t)));
+    }
+  }
+  return 0;
 }
 
 function resolveThrow(toX, toY) {
@@ -164,41 +208,82 @@ function drawBackground() {
   ctx.fillRect(0, HEIGHT - 80, WIDTH, 80);
 }
 
-function drawHandAndDart(angle) {
+function drawHandAndDart(aimAngle, swingOffset, holdingDart) {
   ctx.save();
   ctx.translate(HAND_X, HAND_Y);
-  ctx.rotate(angle * 0.15);
+  ctx.rotate(aimAngle * 0.15 + swingOffset);
 
-  ctx.fillStyle = '#e0a56f';
+  const skin = ctx.createLinearGradient(-20, -40, 20, 40);
+  skin.addColorStop(0, '#f2bd8f');
+  skin.addColorStop(1, '#c98a54');
+
+  // Sleeve, tapering from off-screen up to the wrist.
+  ctx.fillStyle = '#3d5a80';
   ctx.beginPath();
-  ctx.ellipse(0, 20, 26, 40, 0, 0, Math.PI * 2);
+  ctx.moveTo(-24, 90);
+  ctx.lineTo(24, 90);
+  ctx.lineTo(15, 8);
+  ctx.lineTo(-15, 8);
+  ctx.closePath();
   ctx.fill();
 
+  // Wrist and palm.
+  ctx.fillStyle = skin;
+  ctx.beginPath();
+  ctx.ellipse(0, 12, 16, 24, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(0, -12, 18, 22, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Thumb.
   ctx.save();
-  ctx.rotate(-0.6);
-  ctx.fillStyle = '#d6d6d6';
-  ctx.fillRect(-3, -70, 6, 45);
-  ctx.fillStyle = '#c72c2c';
+  ctx.rotate(holdingDart ? -0.85 : -1.05);
+  ctx.fillStyle = skin;
   ctx.beginPath();
-  ctx.moveTo(-3, -70);
-  ctx.lineTo(3, -70);
-  ctx.lineTo(0, -82);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = '#333';
-  ctx.beginPath();
-  ctx.moveTo(-3, -25);
-  ctx.lineTo(-14, -10);
-  ctx.lineTo(-3, -14);
-  ctx.closePath();
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(3, -25);
-  ctx.lineTo(14, -10);
-  ctx.lineTo(3, -14);
-  ctx.closePath();
+  ctx.ellipse(0, -18, 6.5, 15, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
+
+  if (holdingDart) {
+    // Dart shaft pinched between the fingers, held back and angled up.
+    ctx.save();
+    ctx.rotate(-0.6);
+    ctx.fillStyle = '#d6d6d6';
+    ctx.fillRect(-3, -72, 6, 46);
+    ctx.fillStyle = '#c72c2c';
+    ctx.beginPath();
+    ctx.moveTo(-3, -72);
+    ctx.lineTo(3, -72);
+    ctx.lineTo(0, -84);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // Fingers curled over the shaft.
+    const fingerAngles = [-0.5, -0.25, 0, 0.25];
+    for (const fa of fingerAngles) {
+      ctx.save();
+      ctx.rotate(fa);
+      ctx.fillStyle = skin;
+      ctx.beginPath();
+      ctx.ellipse(0, -30, 5.5, 13, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  } else {
+    // Open hand, fingers splayed forward after the release.
+    const fingerAngles = [-0.45, -0.16, 0.13, 0.42];
+    for (const fa of fingerAngles) {
+      ctx.save();
+      ctx.rotate(fa);
+      ctx.fillStyle = skin;
+      ctx.beginPath();
+      ctx.ellipse(0, -34, 5, 17, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
 
   ctx.restore();
 }
@@ -271,9 +356,21 @@ function drawHUD() {
   ctx.fillText(`Darts: ${dartsLeft}`, WIDTH - 20, 34);
 
   ctx.textAlign = 'left';
-  ctx.font = '14px Arial';
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-  ctx.fillText('Press S for Shop', 20, HEIGHT - 20);
+  drawShopButton();
+}
+
+function drawShopButton() {
+  const label = state === 'shop' ? 'Close' : 'Shop';
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+  ctx.fillRect(SHOP_BUTTON.x, SHOP_BUTTON.y, SHOP_BUTTON.w, SHOP_BUTTON.h);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(SHOP_BUTTON.x, SHOP_BUTTON.y, SHOP_BUTTON.w, SHOP_BUTTON.h);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 16px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(label, SHOP_BUTTON.x + SHOP_BUTTON.w / 2, SHOP_BUTTON.y + SHOP_BUTTON.h / 2 + 5);
+  ctx.textAlign = 'left';
 }
 
 function drawShop() {
@@ -302,9 +399,10 @@ function drawShop() {
 
   ctx.font = '16px Arial';
   ctx.fillStyle = '#cccccc';
-  ctx.fillText('Press S to close', WIDTH / 2, BUY_BUTTON.y + BUY_BUTTON.h + 40);
+  ctx.fillText('Tap Close (or press S) to leave', WIDTH / 2, BUY_BUTTON.y + BUY_BUTTON.h + 40);
 
   ctx.textAlign = 'left';
+  drawShopButton();
 }
 
 function drawVignette() {
@@ -335,6 +433,15 @@ function update(dt, time) {
   popups.forEach((p) => (p.life -= dt * 0.0015));
   popups = popups.filter((p) => p.life > 0);
 
+  if (armAnim) {
+    const progress = (time - armAnim.startTime) / ARM_ANIM_DURATION;
+    if (!armAnim.released && progress >= RELEASE_FRACTION) {
+      armAnim.released = true;
+      flyingDart = { fromX: HAND_X, fromY: HAND_Y, toX: armAnim.toX, toY: armAnim.toY, startTime: time };
+    }
+    if (progress >= 1) armAnim = null;
+  }
+
   if (flyingDart && time - flyingDart.startTime >= THROW_DURATION) {
     resolveThrow(flyingDart.toX, flyingDart.toY);
     flyingDart = null;
@@ -346,8 +453,9 @@ function draw(time) {
   for (const target of targets) target.draw(ctx);
   drawPopups();
 
-  const angle = Math.atan2(mouse.y - HAND_Y, mouse.x - HAND_X);
-  if (!flyingDart) drawHandAndDart(angle);
+  const aimAngle = Math.atan2(mouse.y - HAND_Y, mouse.x - HAND_X);
+  const swingOffset = armAnim ? armSwingOffset((time - armAnim.startTime) / ARM_ANIM_DURATION) : 0;
+  drawHandAndDart(aimAngle, swingOffset, !flyingDart);
   drawFlyingDart(time);
 
   drawVignette();
@@ -365,33 +473,71 @@ function loop(time) {
   requestAnimationFrame(loop);
 }
 
-canvas.addEventListener('mousemove', (e) => {
+function eventToCanvasPos(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
-  mouse.x = (e.clientX - rect.left) * (WIDTH / rect.width);
-  mouse.y = (e.clientY - rect.top) * (HEIGHT / rect.height);
-});
+  return {
+    x: (clientX - rect.left) * (WIDTH / rect.width),
+    y: (clientY - rect.top) * (HEIGHT / rect.height),
+  };
+}
 
-canvas.addEventListener('click', () => {
+function handleInput(x, y) {
+  if (pointInRect(x, y, SHOP_BUTTON)) {
+    toggleShop();
+    return;
+  }
   if (state === 'shop') {
-    if (pointInRect(mouse.x, mouse.y, BUY_BUTTON)) buyDart();
+    if (pointInRect(x, y, BUY_BUTTON)) buyDart();
     return;
   }
   if (state === 'gameover') {
     resetGame();
     return;
   }
-  if (flyingDart || dartsLeft <= 0) return;
-  throwDart(mouse.x, mouse.y);
+  if (armAnim || flyingDart || dartsLeft <= 0) return;
+  startThrow(x, y);
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  const pos = eventToCanvasPos(e.clientX, e.clientY);
+  mouse.x = pos.x;
+  mouse.y = pos.y;
 });
 
+canvas.addEventListener('click', () => handleInput(mouse.x, mouse.y));
+
+canvas.addEventListener(
+  'touchstart',
+  (e) => {
+    e.preventDefault();
+    const touch = e.changedTouches[0];
+    const pos = eventToCanvasPos(touch.clientX, touch.clientY);
+    mouse.x = pos.x;
+    mouse.y = pos.y;
+    handleInput(pos.x, pos.y);
+  },
+  { passive: false }
+);
+
 window.addEventListener('keydown', (e) => {
-  if (e.key.toLowerCase() !== 's') return;
-  if (state === 'shop') {
-    state = dartsLeft > 0 ? 'playing' : 'gameover';
-  } else if ((state === 'playing' || state === 'gameover') && !flyingDart) {
-    state = 'shop';
-  }
+  if (e.key.toLowerCase() === 's') toggleShop();
 });
+
+function fitCanvas() {
+  const aspect = WIDTH / HEIGHT;
+  let w = window.innerWidth;
+  let h = w / aspect;
+  if (h > window.innerHeight) {
+    h = window.innerHeight;
+    w = h * aspect;
+  }
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+}
+
+window.addEventListener('resize', fitCanvas);
+window.addEventListener('orientationchange', fitCanvas);
+fitCanvas();
 
 resetGame();
 requestAnimationFrame(loop);
