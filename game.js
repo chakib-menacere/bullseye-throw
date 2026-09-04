@@ -17,10 +17,12 @@ const THROW_DURATION = 250;
 const RESPAWN_DELAY = 1500;
 const DART_COST = 15;
 const BUY_BUTTON = { x: WIDTH / 2 - 120, y: HEIGHT / 2 - 40, w: 240, h: 80 };
+const RESET_BUTTON = { x: WIDTH / 2 - 90, y: BUY_BUTTON.y + BUY_BUTTON.h + 65, w: 180, h: 38 };
 const SHOP_BUTTON = { x: WIDTH - 110, y: 44, w: 90, h: 44 };
 const LEADERBOARD_BUTTON = { x: WIDTH - 210, y: 44, w: 90, h: 44 };
 const LEADERBOARD_SIZE = 10;
 const PLAYER_NAME_KEY = 'bullseyePlayerName';
+const PROGRESS_KEY = 'bullseyeProgress';
 
 // Throwing arm animation: a windup (pull back), a release (dart leaves the
 // hand partway through the forward swing), then an easing recovery to idle.
@@ -128,6 +130,45 @@ function resetGame() {
   spawnTargets();
 }
 
+function startNewRound() {
+  score = 0;
+  dartsLeft = MAX_DARTS;
+  state = 'playing';
+  armAnim = null;
+  flyingDart = null;
+  popups = [];
+  spawnTargets();
+  saveProgress();
+}
+
+function saveProgress() {
+  try {
+    localStorage.setItem(PROGRESS_KEY, JSON.stringify({ score, money, dartsLeft }));
+  } catch (err) {
+    console.error('Failed to save progress', err);
+  }
+}
+
+function loadProgress() {
+  try {
+    const raw = localStorage.getItem(PROGRESS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    console.error('Failed to load progress', err);
+    return null;
+  }
+}
+
+function resetProgress() {
+  const ok = window.confirm('Reset all local progress (score, money, darts) and your saved name for a new player? This cannot be undone.');
+  if (!ok) return;
+  localStorage.removeItem(PROGRESS_KEY);
+  localStorage.removeItem(PLAYER_NAME_KEY);
+  resetGame();
+  saveProgress();
+  setTimeout(() => ensurePlayerName('New player! Enter your name for the leaderboard:'), 50);
+}
+
 function addPopup(x, y, text, color) {
   popups.push({ x, y, text, color, life: 1 });
 }
@@ -182,14 +223,19 @@ async function submitScore(name, finalScore) {
   }
 }
 
-function handleGameOver() {
-  if (!leaderboardDb) return;
+function ensurePlayerName(promptText) {
   let name = localStorage.getItem(PLAYER_NAME_KEY);
   if (!name) {
-    name = (window.prompt('Game over! Enter your name for the leaderboard:', '') || '').trim().slice(0, 20);
+    name = (window.prompt(promptText, '') || '').trim().slice(0, 20);
     if (!name) name = 'Anonymous';
     localStorage.setItem(PLAYER_NAME_KEY, name);
   }
+  return name;
+}
+
+function handleGameOver() {
+  if (!leaderboardDb) return;
+  const name = ensurePlayerName('Game over! Enter your name for the leaderboard:');
   submitScore(name, score).then(fetchLeaderboard);
 }
 
@@ -201,6 +247,7 @@ function buyDart() {
   money -= DART_COST;
   dartsLeft++;
   addPopup(WIDTH / 2, HEIGHT / 2 - 40, '+1 dart', '#7CFC00');
+  saveProgress();
 }
 
 function startThrow(targetX, targetY) {
@@ -252,6 +299,7 @@ function resolveThrow(toX, toY) {
     state = 'gameover';
     handleGameOver();
   }
+  saveProgress();
 }
 
 function drawBackground() {
@@ -507,6 +555,15 @@ function drawShop() {
   ctx.fillStyle = '#cccccc';
   ctx.fillText('Tap Close (or press S) to leave', WIDTH / 2, BUY_BUTTON.y + BUY_BUTTON.h + 40);
 
+  ctx.fillStyle = 'rgba(120, 30, 30, 0.6)';
+  ctx.fillRect(RESET_BUTTON.x, RESET_BUTTON.y, RESET_BUTTON.w, RESET_BUTTON.h);
+  ctx.strokeStyle = '#ff8080';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(RESET_BUTTON.x, RESET_BUTTON.y, RESET_BUTTON.w, RESET_BUTTON.h);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '14px Arial';
+  ctx.fillText('New Player / Reset', RESET_BUTTON.x + RESET_BUTTON.w / 2, RESET_BUTTON.y + RESET_BUTTON.h / 2 + 5);
+
   ctx.textAlign = 'left';
   drawShopButton();
   drawLeaderboardButton();
@@ -600,11 +657,12 @@ function handleInput(x, y) {
   }
   if (state === 'shop') {
     if (pointInRect(x, y, BUY_BUTTON)) buyDart();
+    else if (pointInRect(x, y, RESET_BUTTON)) resetProgress();
     return;
   }
   if (state === 'leaderboard') return;
   if (state === 'gameover') {
-    resetGame();
+    startNewRound();
     return;
   }
   if (armAnim || flyingDart || dartsLeft <= 0) return;
@@ -654,5 +712,19 @@ window.addEventListener('resize', fitCanvas);
 window.addEventListener('orientationchange', fitCanvas);
 fitCanvas();
 
-resetGame();
+const savedProgress = loadProgress();
+if (savedProgress) {
+  score = typeof savedProgress.score === 'number' ? savedProgress.score : 0;
+  money = typeof savedProgress.money === 'number' ? savedProgress.money : 0;
+  dartsLeft = typeof savedProgress.dartsLeft === 'number' ? savedProgress.dartsLeft : MAX_DARTS;
+  state = dartsLeft > 0 ? 'playing' : 'gameover';
+  armAnim = null;
+  flyingDart = null;
+  popups = [];
+  spawnTargets();
+} else {
+  resetGame();
+}
+saveProgress();
 requestAnimationFrame(loop);
+setTimeout(() => ensurePlayerName('Welcome! Enter your name for the leaderboard:'), 50);
