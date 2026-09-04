@@ -1,0 +1,397 @@
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const WIDTH = canvas.width;
+const HEIGHT = canvas.height;
+
+const HAND_X = WIDTH / 2;
+const HAND_Y = HEIGHT - 40;
+const MAX_DARTS = 10;
+const THROW_DURATION = 250;
+const RESPAWN_DELAY = 1500;
+const DART_COST = 15;
+const BUY_BUTTON = { x: WIDTH / 2 - 110, y: HEIGHT / 2 - 25, w: 220, h: 60 };
+
+// Ring thresholds as a fraction of target radius, ordered inner to outer.
+const RING_SCORES = [
+  { t: 0.12, points: 50 },
+  { t: 0.25, points: 30 },
+  { t: 0.5, points: 20 },
+  { t: 0.75, points: 10 },
+  { t: 1.0, points: 5 },
+];
+
+let mouse = { x: WIDTH / 2, y: HEIGHT / 2 };
+let score = 0;
+let money = 0;
+let dartsLeft = MAX_DARTS;
+let state = 'playing'; // 'playing' | 'shop' | 'gameover'
+let flyingDart = null;
+let popups = [];
+let targets = [];
+let lastTime = 0;
+
+class Target {
+  constructor(baseX, baseY, radius, moves) {
+    this.baseX = baseX;
+    this.baseY = baseY;
+    this.radius = radius;
+    this.moves = moves;
+    this.phase = Math.random() * Math.PI * 2;
+    this.speed = 1.2 + Math.random() * 0.8;
+    this.range = 90;
+    this.alive = true;
+    this.respawnAt = 0;
+  }
+
+  get x() {
+    return this.moves ? this.baseX + Math.sin(this.phase) * this.range : this.baseX;
+  }
+
+  get y() {
+    return this.baseY;
+  }
+
+  update(dt, time) {
+    if (this.moves) this.phase += dt * 0.001 * this.speed;
+    if (!this.alive && time > this.respawnAt) this.alive = true;
+  }
+
+  draw(ctx) {
+    if (!this.alive) return;
+    const colors = ['#c72c2c', '#f2f2f2', '#c72c2c', '#f2f2f2', '#c72c2c'];
+    for (let i = 0; i < colors.length; i++) {
+      const r = this.radius * (1 - i / colors.length);
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = colors[i];
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  scoreAt(px, py) {
+    if (!this.alive) return null;
+    const t = Math.hypot(px - this.x, py - this.y) / this.radius;
+    if (t > 1) return null;
+    return RING_SCORES.find((r) => t <= r.t).points;
+  }
+}
+
+function spawnTargets() {
+  targets = [
+    new Target(150, 180, 55, false),
+    new Target(400, 140, 45, true),
+    new Target(650, 200, 55, false),
+    new Target(280, 330, 40, true),
+    new Target(560, 340, 50, false),
+  ];
+}
+
+function resetGame() {
+  score = 0;
+  money = 0;
+  dartsLeft = MAX_DARTS;
+  state = 'playing';
+  flyingDart = null;
+  popups = [];
+  spawnTargets();
+}
+
+function addPopup(x, y, text, color) {
+  popups.push({ x, y, text, color, life: 1 });
+}
+
+function pointInRect(px, py, rect) {
+  return px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
+}
+
+function buyDart() {
+  if (money < DART_COST) {
+    addPopup(WIDTH / 2, HEIGHT / 2 - 40, 'Not enough money', '#ff5c5c');
+    return;
+  }
+  money -= DART_COST;
+  dartsLeft++;
+  addPopup(WIDTH / 2, HEIGHT / 2 - 40, '+1 dart', '#7CFC00');
+}
+
+function throwDart(targetX, targetY) {
+  flyingDart = {
+    fromX: HAND_X,
+    fromY: HAND_Y,
+    toX: targetX,
+    toY: targetY,
+    startTime: performance.now(),
+  };
+  dartsLeft--;
+}
+
+function resolveThrow(toX, toY) {
+  let hit = null;
+  for (const target of targets) {
+    const points = target.scoreAt(toX, toY);
+    if (points !== null) {
+      hit = { target, points };
+      break;
+    }
+  }
+
+  if (hit) {
+    score += hit.points;
+    money += hit.points;
+    addPopup(toX, toY, `+${hit.points}`, '#ffd23f');
+    hit.target.alive = false;
+    hit.target.respawnAt = performance.now() + RESPAWN_DELAY;
+  } else {
+    addPopup(toX, toY, 'MISS', '#ff5c5c');
+  }
+
+  if (dartsLeft <= 0) state = 'gameover';
+}
+
+function drawBackground() {
+  const grad = ctx.createLinearGradient(0, 0, 0, HEIGHT);
+  grad.addColorStop(0, '#3a4a5a');
+  grad.addColorStop(1, '#22303c');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  ctx.fillStyle = '#2a3a2a';
+  ctx.fillRect(0, HEIGHT - 80, WIDTH, 80);
+}
+
+function drawHandAndDart(angle) {
+  ctx.save();
+  ctx.translate(HAND_X, HAND_Y);
+  ctx.rotate(angle * 0.15);
+
+  ctx.fillStyle = '#e0a56f';
+  ctx.beginPath();
+  ctx.ellipse(0, 20, 26, 40, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  ctx.rotate(-0.6);
+  ctx.fillStyle = '#d6d6d6';
+  ctx.fillRect(-3, -70, 6, 45);
+  ctx.fillStyle = '#c72c2c';
+  ctx.beginPath();
+  ctx.moveTo(-3, -70);
+  ctx.lineTo(3, -70);
+  ctx.lineTo(0, -82);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#333';
+  ctx.beginPath();
+  ctx.moveTo(-3, -25);
+  ctx.lineTo(-14, -10);
+  ctx.lineTo(-3, -14);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(3, -25);
+  ctx.lineTo(14, -10);
+  ctx.lineTo(3, -14);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawFlyingDart(time) {
+  if (!flyingDart) return;
+  const t = Math.min((time - flyingDart.startTime) / THROW_DURATION, 1);
+  const x = flyingDart.fromX + (flyingDart.toX - flyingDart.fromX) * t;
+  const y = flyingDart.fromY + (flyingDart.toY - flyingDart.fromY) * t - Math.sin(t * Math.PI) * 60;
+  const angle = Math.atan2(flyingDart.toY - flyingDart.fromY, flyingDart.toX - flyingDart.fromX);
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = '#d6d6d6';
+  ctx.fillRect(-12, -3, 24, 6);
+  ctx.fillStyle = '#c72c2c';
+  ctx.beginPath();
+  ctx.moveTo(12, -3);
+  ctx.lineTo(12, 3);
+  ctx.lineTo(20, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCrosshair() {
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(mouse.x, mouse.y, 14, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(mouse.x - 20, mouse.y);
+  ctx.lineTo(mouse.x - 8, mouse.y);
+  ctx.moveTo(mouse.x + 8, mouse.y);
+  ctx.lineTo(mouse.x + 20, mouse.y);
+  ctx.moveTo(mouse.x, mouse.y - 20);
+  ctx.lineTo(mouse.x, mouse.y - 8);
+  ctx.moveTo(mouse.x, mouse.y + 8);
+  ctx.lineTo(mouse.x, mouse.y + 20);
+  ctx.stroke();
+}
+
+function drawPopups() {
+  for (const p of popups) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.font = 'bold 20px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(p.text, p.x, p.y - (1 - p.life) * 40);
+  }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'left';
+}
+
+function drawHUD() {
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 22px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText(`Score: ${score}`, 20, 34);
+
+  ctx.fillStyle = '#ffd23f';
+  ctx.font = 'bold 18px Arial';
+  ctx.fillText(`Money: $${money}`, 20, 60);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 22px Arial';
+  ctx.textAlign = 'right';
+  ctx.fillText(`Darts: ${dartsLeft}`, WIDTH - 20, 34);
+
+  ctx.textAlign = 'left';
+  ctx.font = '14px Arial';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+  ctx.fillText('Press S for Shop', 20, HEIGHT - 20);
+}
+
+function drawShop() {
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 40px Arial';
+  ctx.fillText('Shop', WIDTH / 2, HEIGHT / 2 - 100);
+
+  ctx.font = 'bold 22px Arial';
+  ctx.fillStyle = '#ffd23f';
+  ctx.fillText(`Money: $${money}`, WIDTH / 2, HEIGHT / 2 - 60);
+
+  const canAfford = money >= DART_COST;
+  ctx.fillStyle = canAfford ? '#2e8b57' : '#555555';
+  ctx.fillRect(BUY_BUTTON.x, BUY_BUTTON.y, BUY_BUTTON.w, BUY_BUTTON.h);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(BUY_BUTTON.x, BUY_BUTTON.y, BUY_BUTTON.w, BUY_BUTTON.h);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 18px Arial';
+  ctx.fillText(`Buy Dart - $${DART_COST}`, WIDTH / 2, BUY_BUTTON.y + BUY_BUTTON.h / 2 + 6);
+
+  ctx.font = '16px Arial';
+  ctx.fillStyle = '#cccccc';
+  ctx.fillText('Press S to close', WIDTH / 2, BUY_BUTTON.y + BUY_BUTTON.h + 40);
+
+  ctx.textAlign = 'left';
+}
+
+function drawVignette() {
+  const grad = ctx.createRadialGradient(WIDTH / 2, HEIGHT / 2, HEIGHT / 3, WIDTH / 2, HEIGHT / 2, HEIGHT / 1.1);
+  grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  grad.addColorStop(1, 'rgba(0, 0, 0, 0.55)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 48px Arial';
+  ctx.fillText('Game Over', WIDTH / 2, HEIGHT / 2 - 30);
+  ctx.font = 'bold 28px Arial';
+  ctx.fillText(`Final Score: ${score}`, WIDTH / 2, HEIGHT / 2 + 20);
+  ctx.font = '20px Arial';
+  ctx.fillText('Click to play again', WIDTH / 2, HEIGHT / 2 + 60);
+  ctx.textAlign = 'left';
+}
+
+function update(dt, time) {
+  for (const target of targets) target.update(dt, time);
+
+  popups.forEach((p) => (p.life -= dt * 0.0015));
+  popups = popups.filter((p) => p.life > 0);
+
+  if (flyingDart && time - flyingDart.startTime >= THROW_DURATION) {
+    resolveThrow(flyingDart.toX, flyingDart.toY);
+    flyingDart = null;
+  }
+}
+
+function draw(time) {
+  drawBackground();
+  for (const target of targets) target.draw(ctx);
+  drawPopups();
+
+  const angle = Math.atan2(mouse.y - HAND_Y, mouse.x - HAND_X);
+  if (!flyingDart) drawHandAndDart(angle);
+  drawFlyingDart(time);
+
+  drawVignette();
+  drawHUD();
+  drawCrosshair();
+  if (state === 'gameover') drawGameOver();
+  if (state === 'shop') drawShop();
+}
+
+function loop(time) {
+  const dt = lastTime ? time - lastTime : 0;
+  lastTime = time;
+  update(dt, time);
+  draw(time);
+  requestAnimationFrame(loop);
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = (e.clientX - rect.left) * (WIDTH / rect.width);
+  mouse.y = (e.clientY - rect.top) * (HEIGHT / rect.height);
+});
+
+canvas.addEventListener('click', () => {
+  if (state === 'shop') {
+    if (pointInRect(mouse.x, mouse.y, BUY_BUTTON)) buyDart();
+    return;
+  }
+  if (state === 'gameover') {
+    resetGame();
+    return;
+  }
+  if (flyingDart || dartsLeft <= 0) return;
+  throwDart(mouse.x, mouse.y);
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() !== 's') return;
+  if (state === 'shop') {
+    state = dartsLeft > 0 ? 'playing' : 'gameover';
+  } else if ((state === 'playing' || state === 'gameover') && !flyingDart) {
+    state = 'shop';
+  }
+});
+
+resetGame();
+requestAnimationFrame(loop);
