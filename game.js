@@ -585,7 +585,8 @@ function drawGameOver() {
   ctx.font = 'bold 48px Arial';
   ctx.fillText('Game Over', WIDTH / 2, HEIGHT / 2 - 30);
   ctx.font = 'bold 28px Arial';
-  ctx.fillText(`Final Score: ${score}`, WIDTH / 2, HEIGHT / 2 + 20);
+  const playerName = localStorage.getItem(PLAYER_NAME_KEY) || 'You';
+  ctx.fillText(`${playerName} - Final Score: ${score}`, WIDTH / 2, HEIGHT / 2 + 20);
   ctx.font = '20px Arial';
   ctx.fillText('Click to play again', WIDTH / 2, HEIGHT / 2 + 60);
   ctx.textAlign = 'left';
