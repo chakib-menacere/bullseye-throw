@@ -18,6 +18,9 @@ const RESPAWN_DELAY = 1500;
 const DART_COST = 15;
 const BUY_BUTTON = { x: WIDTH / 2 - 120, y: HEIGHT / 2 - 40, w: 240, h: 80 };
 const SHOP_BUTTON = { x: WIDTH - 110, y: 44, w: 90, h: 44 };
+const LEADERBOARD_BUTTON = { x: WIDTH - 210, y: 44, w: 90, h: 44 };
+const LEADERBOARD_SIZE = 10;
+const PLAYER_NAME_KEY = 'bullseyePlayerName';
 
 // Throwing arm animation: a windup (pull back), a release (dart leaves the
 // hand partway through the forward swing), then an easing recovery to idle.
@@ -44,12 +47,14 @@ let mouse = { x: WIDTH / 2, y: HEIGHT / 2 };
 let score = 0;
 let money = 0;
 let dartsLeft = MAX_DARTS;
-let state = 'playing'; // 'playing' | 'shop' | 'gameover'
+let state = 'playing'; // 'playing' | 'shop' | 'leaderboard' | 'gameover'
 let armAnim = null; // { startTime, toX, toY, released }
 let flyingDart = null;
 let popups = [];
 let targets = [];
 let lastTime = 0;
+let leaderboard = [];
+let leaderboardStatus = 'idle'; // 'idle' | 'loading' | 'ready' | 'error'
 
 class Target {
   constructor(baseX, baseY, radius, moves) {
@@ -139,6 +144,55 @@ function toggleShop() {
   }
 }
 
+function toggleLeaderboard() {
+  if (state === 'leaderboard') {
+    state = dartsLeft > 0 ? 'playing' : 'gameover';
+  } else if ((state === 'playing' || state === 'gameover') && !armAnim) {
+    state = 'leaderboard';
+    fetchLeaderboard();
+  }
+}
+
+async function fetchLeaderboard() {
+  if (!leaderboardDb) {
+    leaderboardStatus = 'error';
+    return;
+  }
+  leaderboardStatus = 'loading';
+  try {
+    const snap = await leaderboardDb.collection('scores').orderBy('score', 'desc').limit(LEADERBOARD_SIZE).get();
+    leaderboard = snap.docs.map((doc) => doc.data());
+    leaderboardStatus = 'ready';
+  } catch (err) {
+    console.error('Failed to load leaderboard', err);
+    leaderboardStatus = 'error';
+  }
+}
+
+async function submitScore(name, finalScore) {
+  if (!leaderboardDb) return;
+  try {
+    await leaderboardDb.collection('scores').add({
+      name,
+      score: finalScore,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    console.error('Failed to submit score', err);
+  }
+}
+
+function handleGameOver() {
+  if (!leaderboardDb) return;
+  let name = localStorage.getItem(PLAYER_NAME_KEY);
+  if (!name) {
+    name = (window.prompt('Game over! Enter your name for the leaderboard:', '') || '').trim().slice(0, 20);
+    if (!name) name = 'Anonymous';
+    localStorage.setItem(PLAYER_NAME_KEY, name);
+  }
+  submitScore(name, score).then(fetchLeaderboard);
+}
+
 function buyDart() {
   if (money < DART_COST) {
     addPopup(WIDTH / 2, HEIGHT / 2 - 40, 'Not enough money', '#ff5c5c');
@@ -194,7 +248,10 @@ function resolveThrow(toX, toY) {
     addPopup(toX, toY, 'MISS', '#ff5c5c');
   }
 
-  if (dartsLeft <= 0) state = 'gameover';
+  if (dartsLeft <= 0) {
+    state = 'gameover';
+    handleGameOver();
+  }
 }
 
 function drawBackground() {
@@ -357,20 +414,69 @@ function drawHUD() {
 
   ctx.textAlign = 'left';
   drawShopButton();
+  drawLeaderboardButton();
 }
 
-function drawShopButton() {
-  const label = state === 'shop' ? 'Close' : 'Shop';
+function drawButton(rect, label) {
   ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-  ctx.fillRect(SHOP_BUTTON.x, SHOP_BUTTON.y, SHOP_BUTTON.w, SHOP_BUTTON.h);
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
   ctx.strokeStyle = '#ffffff';
   ctx.lineWidth = 1.5;
-  ctx.strokeRect(SHOP_BUTTON.x, SHOP_BUTTON.y, SHOP_BUTTON.w, SHOP_BUTTON.h);
+  ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
   ctx.fillStyle = '#ffffff';
   ctx.font = 'bold 16px Arial';
   ctx.textAlign = 'center';
-  ctx.fillText(label, SHOP_BUTTON.x + SHOP_BUTTON.w / 2, SHOP_BUTTON.y + SHOP_BUTTON.h / 2 + 5);
+  ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 5);
   ctx.textAlign = 'left';
+}
+
+function drawShopButton() {
+  drawButton(SHOP_BUTTON, state === 'shop' ? 'Close' : 'Shop');
+}
+
+function drawLeaderboardButton() {
+  drawButton(LEADERBOARD_BUTTON, state === 'leaderboard' ? 'Close' : '🏆');
+}
+
+function drawLeaderboard() {
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 36px Arial';
+  ctx.fillText('Leaderboard', WIDTH / 2, 90);
+
+  ctx.font = '18px Arial';
+  if (leaderboardStatus === 'error') {
+    ctx.fillStyle = '#ff5c5c';
+    ctx.fillText('Leaderboard not set up yet', WIDTH / 2, 150);
+  } else if (leaderboardStatus === 'loading') {
+    ctx.fillStyle = '#cccccc';
+    ctx.fillText('Loading...', WIDTH / 2, 150);
+  } else if (leaderboard.length === 0) {
+    ctx.fillStyle = '#cccccc';
+    ctx.fillText('No scores yet -- be the first!', WIDTH / 2, 150);
+  } else {
+    leaderboard.forEach((entry, i) => {
+      const y = 140 + i * 36;
+      ctx.fillStyle = i < 3 ? '#ffd23f' : '#ffffff';
+      ctx.font = 'bold 20px Arial';
+      ctx.textAlign = 'left';
+      ctx.fillText(`${i + 1}. ${entry.name}`, WIDTH / 2 - 160, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(`${entry.score}`, WIDTH / 2 + 160, y);
+    });
+  }
+
+  ctx.textAlign = 'center';
+  ctx.font = '16px Arial';
+  ctx.fillStyle = '#cccccc';
+  ctx.fillText('Tap Close (or press L) to leave', WIDTH / 2, HEIGHT - 40);
+
+  ctx.textAlign = 'left';
+  drawShopButton();
+  drawLeaderboardButton();
 }
 
 function drawShop() {
@@ -403,6 +509,7 @@ function drawShop() {
 
   ctx.textAlign = 'left';
   drawShopButton();
+  drawLeaderboardButton();
 }
 
 function drawVignette() {
@@ -463,6 +570,7 @@ function draw(time) {
   drawCrosshair();
   if (state === 'gameover') drawGameOver();
   if (state === 'shop') drawShop();
+  if (state === 'leaderboard') drawLeaderboard();
 }
 
 function loop(time) {
@@ -486,10 +594,15 @@ function handleInput(x, y) {
     toggleShop();
     return;
   }
+  if (pointInRect(x, y, LEADERBOARD_BUTTON)) {
+    toggleLeaderboard();
+    return;
+  }
   if (state === 'shop') {
     if (pointInRect(x, y, BUY_BUTTON)) buyDart();
     return;
   }
+  if (state === 'leaderboard') return;
   if (state === 'gameover') {
     resetGame();
     return;
@@ -520,7 +633,9 @@ canvas.addEventListener(
 );
 
 window.addEventListener('keydown', (e) => {
-  if (e.key.toLowerCase() === 's') toggleShop();
+  const key = e.key.toLowerCase();
+  if (key === 's') toggleShop();
+  if (key === 'l') toggleLeaderboard();
 });
 
 function fitCanvas() {
