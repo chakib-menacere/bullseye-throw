@@ -160,7 +160,12 @@ function loadProgress() {
 }
 
 function resetProgress() {
-  const ok = window.confirm('Reset all local progress (score, money, darts) and your saved name for a new player? This cannot be undone.');
+  let ok = false;
+  try {
+    ok = window.confirm('Reset all local progress (score, money, darts) and your saved name for a new player? This cannot be undone.');
+  } catch (err) {
+    console.error('confirm() unavailable in this browser', err);
+  }
   if (!ok) return;
   localStorage.removeItem(PROGRESS_KEY);
   localStorage.removeItem(PLAYER_NAME_KEY);
@@ -226,7 +231,12 @@ async function submitScore(name, finalScore) {
 function ensurePlayerName(promptText) {
   let name = localStorage.getItem(PLAYER_NAME_KEY);
   if (!name) {
-    name = (window.prompt(promptText, '') || '').trim().slice(0, 20);
+    try {
+      name = (window.prompt(promptText, '') || '').trim().slice(0, 20);
+    } catch (err) {
+      console.error('prompt() unavailable in this browser', err);
+      name = '';
+    }
     if (!name) name = 'Anonymous';
     localStorage.setItem(PLAYER_NAME_KEY, name);
   }
@@ -634,8 +644,12 @@ function draw(time) {
 function loop(time) {
   const dt = lastTime ? time - lastTime : 0;
   lastTime = time;
-  update(dt, time);
-  draw(time);
+  try {
+    update(dt, time);
+    draw(time);
+  } catch (err) {
+    console.error('Frame error (game keeps running)', err);
+  }
   requestAnimationFrame(loop);
 }
 
