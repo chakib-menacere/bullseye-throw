@@ -695,6 +695,7 @@ window.addEventListener('keydown', (e) => {
   const key = e.key.toLowerCase();
   if (key === 's') toggleShop();
   if (key === 'l') toggleLeaderboard();
+  if (key === 'r') resetProgress();
 });
 
 function fitCanvas() {
