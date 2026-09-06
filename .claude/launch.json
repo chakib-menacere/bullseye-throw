@@ -11,7 +11,8 @@
         "-File",
         "C:\\Users\\chaki\\AppData\\Local\\Temp\\claude\\C--workspace-firstProject\\b582ad86-6b12-4ba9-947c-12fdab9b4a0c\\scratchpad\\serve.ps1"
       ],
-      "port": 8080
+      "port": 8080,
+      "autoPort": true
     }
   ]
 }
